@@ -1,0 +1,8 @@
+{
+  "name": "Gemini Personal Agent",
+  "description": "A multimodal AI personal agent featuring real-time voice interaction and rich text chat capabilities powered by Google Gemini 2.5.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
