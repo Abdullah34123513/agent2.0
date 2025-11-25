@@ -1,15 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Image as ImageIcon, Loader2, Link as LinkIcon, Globe, Database, ArrowRight } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
 import { ChatSession, ChatMessage, Role } from '../types';
 
 interface ChatModeProps {
-  apiKey: string; // Kept for interface compatibility, but unused here
+  apiKey: string;
   session: ChatSession;
   onUpdateSession: (session: ChatSession) => void;
+  selectedModel?: string;
 }
 
-const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
+const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession, selectedModel = 'gemini-2.5-flash' }) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
@@ -34,7 +34,6 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
       timestamp: Date.now()
     };
 
-    // Optimistic update
     const updatedMessages = [...session.messages, userMessage];
     const newModelMsgId = (Date.now() + 1).toString();
     const modelMessage: ChatMessage = {
@@ -54,14 +53,15 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
     setIsLoading(true);
 
     try {
-      // Connect to our Express Backend
-      const response = await fetch('http://localhost:3001/api/chat', {
+      // Use relative path since we are serving from the same origin now
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMessage.text,
-          history: session.messages, // Send previous context
-          sessionId: session.id
+          history: session.messages,
+          sessionId: session.id,
+          model: selectedModel
         })
       });
 
@@ -77,7 +77,6 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
-        // The server sends line-delimited JSON strings
         const lines = chunk.split('\n').filter(line => line.trim() !== '');
 
         for (const line of lines) {
@@ -91,10 +90,9 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
                 } else if (data.type === 'sources') {
                     accumulatedSources = data.content;
                 } else if (data.type === 'error') {
-                    accumulatedText += "\n[Error: " + data.content + "]";
+                    accumulatedText += `\n[Error: ${data.content}]`;
                 }
 
-                // Update the UI
                 onUpdateSession({
                     ...session,
                     messages: [...updatedMessages, {
@@ -115,7 +113,7 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
       console.error("Error:", error);
       onUpdateSession({
         ...session,
-        messages: [...updatedMessages, { ...modelMessage, text: "Sorry, I couldn't connect to the server. Is the backend running?", isLoading: false }]
+        messages: [...updatedMessages, { ...modelMessage, text: "Error connecting to server. Please check if the backend is running at http://localhost:3001", isLoading: false }]
       });
     } finally {
       setIsLoading(false);
@@ -130,6 +128,13 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
     }
   };
 
+  // Simple formatter since we removed ReactMarkdown
+  const formatText = (text: string) => {
+      return text.split('\n').map((str, i) => (
+          <p key={i} className="min-h-[1em] mb-1">{str}</p>
+      ));
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
       
@@ -138,7 +143,7 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
         {session.messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-slate-500 opacity-50">
             <Globe className="w-16 h-16 mb-4" />
-            <p>Start a conversation with your agent</p>
+            <p>Start a conversation with {selectedModel}</p>
           </div>
         )}
         
@@ -154,14 +159,13 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
                   : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'
               }`}
             >
-              <div className="prose prose-invert prose-sm max-w-none break-words">
-                <ReactMarkdown>{msg.text}</ReactMarkdown>
+              <div className="prose prose-invert prose-sm max-w-none break-words whitespace-pre-wrap font-sans">
+                {msg.text}
                 {msg.isLoading && (
                     <span className="inline-block w-2 h-4 ml-1 bg-indigo-400 animate-pulse align-middle"></span>
                 )}
               </div>
 
-              {/* Citations / Sources */}
               {msg.sources && msg.sources.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-slate-700/50">
                       <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-2 flex items-center gap-1">
@@ -187,7 +191,6 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
           </div>
         ))}
         
-        {/* Active Tool Indicator */}
         {activeTool && (
             <div className="flex justify-start">
                 <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-900/50 px-3 py-1.5 rounded-full border border-slate-800 animate-pulse">
@@ -209,7 +212,6 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <div className="p-4 bg-slate-950 border-t border-slate-800">
         <div className="relative flex items-end gap-2 bg-slate-900 rounded-xl p-2 border border-slate-800 focus-within:border-indigo-500/50 transition-colors">
           <button className="p-2 text-slate-400 hover:text-indigo-400 transition-colors rounded-lg hover:bg-slate-800">
@@ -220,7 +222,7 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
+            placeholder={`Message ${selectedModel}...`}
             className="flex-1 bg-transparent text-slate-200 placeholder-slate-500 text-sm p-2 max-h-32 focus:outline-none resize-none"
             rows={1}
             style={{ minHeight: '40px' }}
@@ -238,10 +240,9 @@ const ChatMode: React.FC<ChatModeProps> = ({ session, onUpdateSession }) => {
             {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
           </button>
         </div>
-        <div className="text-center mt-2">
-             <p className="text-[10px] text-slate-600">
-                Connected to secure backend. Memories are persistent.
-             </p>
+        <div className="text-center mt-2 flex justify-between px-2">
+             <span className="text-[10px] text-slate-600">Model: {selectedModel}</span>
+             <span className="text-[10px] text-slate-600">Secure Backend Connected</span>
         </div>
       </div>
     </div>

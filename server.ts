@@ -15,6 +15,11 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json());
 
+// Serve static files from the current directory
+// This allows you to visit http://localhost:3001 to see the app
+// Fix: Use path.resolve() instead of __dirname to avoid TypeScript errors
+app.use(express.static(path.resolve()));
+
 // Database Setup
 let db: Database;
 
@@ -52,16 +57,17 @@ async function initDb() {
 }
 
 // --- Gemini Setup ---
+// We lazily initialize this to allow the server to start even if the key is missing initially
+let ai: GoogleGenAI | null = null;
 const apiKey = process.env.API_KEY;
-if (!apiKey) {
-  console.error("API_KEY is missing in .env");
-  throw new Error("API_KEY is missing in .env");
+if (apiKey) {
+  ai = new GoogleGenAI({ apiKey });
+} else {
+  console.warn("WARNING: API_KEY is missing in .env. AI features will fail until configured.");
 }
-const ai = new GoogleGenAI({ apiKey });
 
 // --- Helper Functions ---
 
-// 1. Memory Tools (Backend Implementation)
 async function storeMemory(content: string, category: string = 'general') {
   const id = Date.now().toString(36) + Math.random().toString(36).substr(2);
   const timestamp = Date.now();
@@ -73,13 +79,9 @@ async function storeMemory(content: string, category: string = 'general') {
 }
 
 async function searchMemory(query: string) {
-  // Simple SQL LIKE search for this MVP. 
-  // In production, use Vector Embeddings (pgvector/sqlite-vss).
   const terms = query.split(' ').filter(t => t.length > 3).map(t => `%${t}%`);
-  
   if (terms.length === 0) return "Please provide more specific keywords.";
 
-  // Dynamically build query OR clause
   const whereClause = terms.map(() => `content LIKE ?`).join(' OR ');
   const memories = await db.all(
     `SELECT content, category, timestamp FROM memories WHERE ${whereClause} LIMIT 5`,
@@ -94,7 +96,6 @@ async function searchMemory(query: string) {
   })));
 }
 
-// 2. Tool Definitions
 const tools = [
   {
     functionDeclarations: [
@@ -123,21 +124,17 @@ const tools = [
       }
     ]
   },
-  { googleSearch: {} } // Enable Google Search
+  { googleSearch: {} }
 ];
 
 // --- API Endpoints ---
 
-// 1. Config (Pass API Key to frontend for Live Mode if needed)
 app.get('/api/config', (req, res) => {
-  res.json({ apiKey: process.env.API_KEY });
+  res.json({ apiKey: process.env.API_KEY || '' });
 });
 
-// 2. Sessions
 app.get('/api/sessions', async (req, res) => {
   const sessions = await db.all('SELECT * FROM sessions ORDER BY created_at DESC');
-  // Hydrate with last message for preview? For now just return sessions.
-  // Ideally we join or subquery, but let's keep it simple.
   const result = [];
   for (const s of sessions) {
      const msgs = await db.all('SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC', s.id);
@@ -160,67 +157,63 @@ app.delete('/api/sessions/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-// 3. Chat (Streaming + Tool Use)
 app.post('/api/chat', async (req, res) => {
-  const { message, history, sessionId } = req.body;
+  const { message, history, sessionId, model } = req.body;
 
-  // Save User Message
+  if (!ai) {
+    res.status(500).json({ error: "API Key not configured on server." });
+    return;
+  }
+
+  // Use the user-selected model or default to flash
+  // Map common names to actual model IDs if needed, or use directly
+  const selectedModel = model || 'gemini-2.5-flash';
+
   await db.run(
     'INSERT INTO messages (id, session_id, role, text, timestamp, image) VALUES (?, ?, ?, ?, ?, ?)',
     [Date.now().toString(), sessionId, 'user', message, Date.now(), null]
   );
 
-  // Prepare Gemini History
-  // We need to convert DB/Frontend format to Gemini format
   const geminiHistory = history.map((msg: any) => ({
     role: msg.role === 'model' ? 'model' : 'user',
     parts: [{ text: msg.text }]
   }));
 
-  // Start Response
   res.setHeader('Content-Type', 'text/plain');
   res.setHeader('Transfer-Encoding', 'chunked');
 
   try {
     const chat = ai.chats.create({
-      model: 'gemini-2.5-flash',
+      model: selectedModel,
       history: geminiHistory,
       config: {
         tools: tools,
-        systemInstruction: "You are a personal agent with access to a long-term memory database. Always check memory if the user asks about personal details.",
+        systemInstruction: "You are a personal agent. Use your memory tools to store and retrieve user details.",
       }
     });
 
-    // Initial Stream
     let resultStream = await chat.sendMessageStream({ message: message });
     let fullText = '';
     let toolCalls = [];
 
-    // Helper to process stream
     for await (const chunk of resultStream) {
-      // 1. Text
       const text = chunk.text;
       if (text) {
         fullText += text;
         res.write(JSON.stringify({ type: 'text', content: text }) + '\n');
       }
-
-      // 2. Tool Calls
       const calls = chunk.functionCalls;
       if (calls && calls.length > 0) {
           toolCalls.push(...calls);
       }
     }
 
-    // Handle Tool Execution (Single turn for simplicity, or loop)
-    // For a robust agent, we loop.
     if (toolCalls.length > 0) {
        const functionResponses = [];
        
        for (const call of toolCalls) {
          let responseObj = { result: 'Unknown tool' };
          
-         // Notify frontend tool is executing
          res.write(JSON.stringify({ type: 'tool_start', tool: call.name }) + '\n');
 
          if (call.name === 'remember_fact') {
@@ -239,7 +232,6 @@ app.post('/api/chat', async (req, res) => {
          });
        }
 
-       // Send tool outputs back to model
        const toolResultStream = await chat.sendMessageStream({ message: functionResponses });
        
        for await (const chunk of toolResultStream) {
@@ -249,7 +241,6 @@ app.post('/api/chat', async (req, res) => {
            res.write(JSON.stringify({ type: 'text', content: text }) + '\n');
          }
          
-         // Grounding Metadata (Sources)
          if (chunk.candidates?.[0]?.groundingMetadata?.groundingChunks) {
             const chunks = chunk.candidates[0].groundingMetadata.groundingChunks;
             const sources = chunks
@@ -263,7 +254,6 @@ app.post('/api/chat', async (req, res) => {
        }
     }
 
-    // Save Model Response
     await db.run(
         'INSERT INTO messages (id, session_id, role, text, timestamp, image) VALUES (?, ?, ?, ?, ?, ?)',
         [Date.now().toString() + 'r', sessionId, 'model', fullText, Date.now(), null]
@@ -271,16 +261,22 @@ app.post('/api/chat', async (req, res) => {
 
     res.end();
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Chat error:', error);
-    res.write(JSON.stringify({ type: 'error', content: 'Internal server error' }));
+    res.write(JSON.stringify({ type: 'error', content: error.message || 'Internal server error' }));
     res.end();
   }
 });
 
-// Start
+// Fallback for any other route to serve index.html (SPA support)
+app.get('*', (req, res) => {
+    // Fix: Use path.resolve() instead of __dirname to avoid TypeScript errors
+    res.sendFile(path.join(path.resolve(), 'index.html'));
+});
+
 initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Visit http://localhost:${PORT} to view your agent.`);
   });
 });

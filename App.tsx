@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Radio, Sparkles, AlertTriangle, Plus, Trash2, MessageCircle } from 'lucide-react';
+import { MessageSquare, Radio, Sparkles, AlertTriangle, Plus, Trash2, MessageCircle, ChevronDown } from 'lucide-react';
 import ChatMode from './components/ChatMode';
 import LiveMode from './components/LiveMode';
 import { ChatSession } from './types';
@@ -11,20 +11,21 @@ const App: React.FC = () => {
   const [activeSessionId, setActiveSessionId] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Model Selection State
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-2.5-flash');
 
-  // Fetch Config and Sessions on Mount
   useEffect(() => {
     const init = async () => {
-      // Timeout promise to prevent hanging forever
       const timeout = new Promise((_, reject) => 
         setTimeout(() => reject(new Error("Connection timed out")), 5000)
       );
 
       try {
-        const fetchConfig = fetch('http://localhost:3001/api/config');
-        const fetchSessions = fetch('http://localhost:3001/api/sessions');
+        // Use relative paths
+        const fetchConfig = fetch('/api/config');
+        const fetchSessions = fetch('/api/sessions');
 
-        // Race against timeout
         const [configRes, sessionRes] = await Promise.race([
             Promise.all([fetchConfig, fetchSessions]),
             timeout
@@ -64,13 +65,12 @@ const App: React.FC = () => {
         createdAt: Date.now()
     };
     
-    // Optimistic UI
     setSessions(prev => [newSession, ...prev]);
     setActiveSessionId(newSession.id);
     setMode('chat');
 
     try {
-        await fetch('http://localhost:3001/api/sessions', {
+        await fetch('/api/sessions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(newSession)
@@ -91,7 +91,7 @@ const App: React.FC = () => {
     }
 
     try {
-        await fetch(`http://localhost:3001/api/sessions/${sessionId}`, {
+        await fetch(`/api/sessions/${sessionId}`, {
             method: 'DELETE'
         });
     } catch (e) {
@@ -126,25 +126,19 @@ const App: React.FC = () => {
       );
   }
 
-  if (error || !apiKey) {
+  // Graceful degradation: If config loads but apiKey is empty, we still show the app but warn the user.
+  // If connection completely failed (network error), show the error screen.
+  if (error) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-slate-900 border border-red-900/50 rounded-2xl p-8 text-center shadow-2xl">
           <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-6" />
           <h1 className="text-2xl font-bold text-white mb-2">Backend Connection Failed</h1>
           <p className="text-slate-400 mb-6 text-sm">
-             Could not connect to the Express server at <code>http://localhost:3001</code>.
+             Could not connect to the Express server.
           </p>
           <div className="bg-slate-950 p-4 rounded-lg text-left text-xs font-mono text-red-300 overflow-auto max-h-32 mb-6 border border-slate-800">
-             {error || "API Key missing or server unreachable."}
-          </div>
-          <div className="text-slate-500 text-xs">
-            <p className="mb-2">Troubleshooting:</p>
-            <ul className="list-disc list-inside space-y-1">
-                <li>Ensure <code>npx ts-node server.ts</code> is running.</li>
-                <li>Check that <code>.env</code> file exists with <code>API_KEY</code>.</li>
-                <li>Verify port 3001 is not blocked.</li>
-            </ul>
+             {error}
           </div>
           <button 
             onClick={() => window.location.reload()}
@@ -165,7 +159,7 @@ const App: React.FC = () => {
         <div className="w-full md:w-72 bg-slate-900 rounded-2xl border border-slate-800 flex flex-col shrink-0 shadow-xl overflow-hidden">
           {/* Header */}
           <div className="p-4 border-b border-slate-800">
-            <div className="flex items-center gap-3 mb-6">
+            <div className="flex items-center gap-3 mb-4">
                 <div className="w-8 h-8 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
                 <Sparkles className="w-5 h-5 text-white" />
                 </div>
@@ -173,6 +167,28 @@ const App: React.FC = () => {
                 <h1 className="font-bold text-base leading-tight">Gemini</h1>
                 <span className="text-[10px] text-indigo-400 font-bold tracking-widest uppercase">Personal Agent</span>
                 </div>
+            </div>
+
+            {/* API Key Warning */}
+            {!apiKey && (
+                 <div className="mb-4 p-2 bg-yellow-900/20 border border-yellow-700/50 rounded text-xs text-yellow-500">
+                    API Key missing. Chat will not respond.
+                 </div>
+            )}
+
+            {/* Model Selector Dropdown */}
+            <div className="relative mb-4 group">
+                <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none">
+                    <ChevronDown className="w-3 h-3 text-slate-500" />
+                </div>
+                <select 
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="w-full appearance-none bg-slate-950 text-slate-300 text-xs font-medium py-2 px-3 rounded-lg border border-slate-800 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
+                >
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash (Fast)</option>
+                    <option value="gemini-3-pro-preview">Gemini 3.0 Pro (Thinking)</option>
+                </select>
             </div>
 
             {/* Mode Switcher */}
@@ -197,7 +213,6 @@ const App: React.FC = () => {
                 </button>
             </div>
 
-            {/* New Chat Button */}
             <button
                 onClick={createNewSession}
                 className="w-full flex items-center gap-2 justify-center py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl transition-colors font-medium text-sm border border-slate-700"
@@ -244,12 +259,6 @@ const App: React.FC = () => {
                  </button>
              ))}
           </div>
-
-          <div className="p-4 border-t border-slate-800">
-            <div className="text-xs text-slate-600 text-center">
-              Powered by Google Gemini 2.5
-            </div>
-          </div>
         </div>
 
         {/* Main Content Area */}
@@ -257,9 +266,10 @@ const App: React.FC = () => {
           {mode === 'chat' && activeSession ? (
             <ChatMode 
                 key={activeSessionId} 
-                apiKey={apiKey} // Passed but mostly unused in chat mode now
+                apiKey={apiKey}
                 session={activeSession}
                 onUpdateSession={updateSession}
+                selectedModel={selectedModel}
             />
           ) : (
             <LiveMode apiKey={apiKey} />
