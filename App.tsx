@@ -10,20 +10,33 @@ const App: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch Config and Sessions on Mount
   useEffect(() => {
     const init = async () => {
+      // Timeout promise to prevent hanging forever
+      const timeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Connection timed out")), 5000)
+      );
+
       try {
-        // 1. Get API Key for Live Mode
-        const configRes = await fetch('http://localhost:3001/api/config');
+        const fetchConfig = fetch('http://localhost:3001/api/config');
+        const fetchSessions = fetch('http://localhost:3001/api/sessions');
+
+        // Race against timeout
+        const [configRes, sessionRes] = await Promise.race([
+            Promise.all([fetchConfig, fetchSessions]),
+            timeout
+        ]) as [Response, Response];
+
         if (configRes.ok) {
             const config = await configRes.json();
             setApiKey(config.apiKey);
+        } else {
+            throw new Error(`Config API Error: ${configRes.statusText}`);
         }
 
-        // 2. Get Sessions
-        const sessionRes = await fetch('http://localhost:3001/api/sessions');
         if (sessionRes.ok) {
             const data = await sessionRes.json();
             setSessions(data);
@@ -33,8 +46,9 @@ const App: React.FC = () => {
                 await createNewSession();
             }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Failed to connect to backend", err);
+        setError(err.message || "Failed to connect");
       } finally {
         setLoading(false);
       }
@@ -55,12 +69,15 @@ const App: React.FC = () => {
     setActiveSessionId(newSession.id);
     setMode('chat');
 
-    // Sync to Backend
-    await fetch('http://localhost:3001/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSession)
-    });
+    try {
+        await fetch('http://localhost:3001/api/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newSession)
+        });
+    } catch (e) {
+        console.error("Failed to save session", e);
+    }
   };
 
   const deleteSession = async (e: React.MouseEvent, sessionId: string) => {
@@ -73,9 +90,13 @@ const App: React.FC = () => {
         else createNewSession();
     }
 
-    await fetch(`http://localhost:3001/api/sessions/${sessionId}`, {
-        method: 'DELETE'
-    });
+    try {
+        await fetch(`http://localhost:3001/api/sessions/${sessionId}`, {
+            method: 'DELETE'
+        });
+    } catch (e) {
+        console.error("Failed to delete session", e);
+    }
   };
 
   const updateSession = (updatedSession: ChatSession) => {
@@ -97,18 +118,40 @@ const App: React.FC = () => {
   const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
 
   if (loading) {
-      return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500">Connecting to server...</div>;
+      return (
+        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-500 space-y-4">
+            <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+            <p>Connecting to backend...</p>
+        </div>
+      );
   }
 
-  if (!apiKey) {
+  if (error || !apiKey) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-slate-900 border border-red-900/50 rounded-2xl p-8 text-center shadow-2xl">
           <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-6" />
-          <h1 className="text-2xl font-bold text-white mb-2">Backend Disconnected</h1>
-          <p className="text-slate-400 mb-6">
-             Could not retrieve API configuration. Please ensure <code>server.ts</code> is running on port 3001 and has a valid .env file.
+          <h1 className="text-2xl font-bold text-white mb-2">Backend Connection Failed</h1>
+          <p className="text-slate-400 mb-6 text-sm">
+             Could not connect to the Express server at <code>http://localhost:3001</code>.
           </p>
+          <div className="bg-slate-950 p-4 rounded-lg text-left text-xs font-mono text-red-300 overflow-auto max-h-32 mb-6 border border-slate-800">
+             {error || "API Key missing or server unreachable."}
+          </div>
+          <div className="text-slate-500 text-xs">
+            <p className="mb-2">Troubleshooting:</p>
+            <ul className="list-disc list-inside space-y-1">
+                <li>Ensure <code>npx ts-node server.ts</code> is running.</li>
+                <li>Check that <code>.env</code> file exists with <code>API_KEY</code>.</li>
+                <li>Verify port 3001 is not blocked.</li>
+            </ul>
+          </div>
+          <button 
+            onClick={() => window.location.reload()}
+            className="mt-6 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-colors text-sm"
+          >
+            Retry Connection
+          </button>
         </div>
       </div>
     );

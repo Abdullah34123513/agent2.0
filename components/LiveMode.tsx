@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, AlertCircle, Volume2 } from 'lucide-react';
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
+import { GoogleGenAI, Modality } from '@google/genai';
+import type { LiveServerMessage } from '@google/genai';
 import { createPcmBlob, decode, decodeAudioData, INPUT_SAMPLE_RATE } from '../utils/audioUtils';
 import VoiceVisualizer from './VoiceVisualizer';
 import { ConnectionState } from '../types';

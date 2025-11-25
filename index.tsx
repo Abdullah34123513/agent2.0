@@ -8,8 +8,20 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+
+try {
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+} catch (e: any) {
+  console.error("Mount Error:", e);
+  root.render(
+    <div style={{ color: 'red', padding: '20px', fontFamily: 'monospace' }}>
+      <h1>Application Crashed</h1>
+      <pre>{e.toString()}</pre>
+      <p>Please check the console for more details.</p>
+    </div>
+  );
+}
